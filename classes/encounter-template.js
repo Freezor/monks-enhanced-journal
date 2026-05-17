@@ -1,9 +1,11 @@
 import { MonksEnhancedJournal } from "../monks-enhanced-journal.js";
 
+const MeasuredTemplatePlaceable = foundry.canvas.placeables.MeasuredTemplate;
+
 /**
  * A helper class for building MeasuredTemplates for deploying an Encounter
  */
-export class EncounterTemplate extends foundry.canvas.placeables.MeasuredTemplate {
+export class EncounterTemplate extends (MeasuredTemplatePlaceable ?? class {}) {
 
     /**
      * Track the timestamp when the last mouse move event was captured.
@@ -62,22 +64,28 @@ export class EncounterTemplate extends foundry.canvas.placeables.MeasuredTemplat
             flags: { "monks-enhanced-journal": { encounter: encounter } }
         };
 
-        // Return the template constructed from the item data
-        const cls = CONFIG.MeasuredTemplate.documentClass;
-        const template = new cls(templateData, { parent: canvas.scene });
-        const object = new this(template);
-        object.encounter = encounter;
-        return object;
+        // Return a v12/v13 MeasuredTemplate preview when that API is available.
+        if (MeasuredTemplatePlaceable && CONFIG.MeasuredTemplate?.documentClass) {
+            const cls = CONFIG.MeasuredTemplate.documentClass;
+            const template = new cls(templateData, { parent: canvas.scene });
+            const object = new this(template);
+            object.encounter = encounter;
+            return object;
+        }
+
+        // Foundry VTT v14 replaced MeasuredTemplate with Region-backed templates.
+        return new EncounterTemplateShim(templateData, encounter);
     }
 
     static getSnappedPosition(x, y, interval = 1) {
         if (interval === 0) return { x: Math.round(x), y: Math.round(y) };
-        let x0 = x.toNearest(canvas.grid.size);
-        let y0 = y.toNearest(canvas.grid.size);
+        const gridSize = canvas.grid?.size ?? canvas.dimensions.size;
+        let x0 = Math.round(x / gridSize) * gridSize;
+        let y0 = Math.round(y / gridSize) * gridSize;
         let dx = 0;
         let dy = 0;
         if (interval !== 1) {
-            let delta = canvas.grid.size / interval;
+            let delta = gridSize / interval;
             dx = Math.round((x - x0) / delta) * delta;
             dy = Math.round((y - y0) / delta) * delta;
         }
@@ -232,4 +240,94 @@ export class EncounterTemplate extends foundry.canvas.placeables.MeasuredTemplat
         this.#events.reject();
     }
 
+}
+
+class EncounterTemplateShim {
+    #events;
+    #moveTime = 0;
+    #origin = null;
+
+    constructor(templateData, encounter) {
+        this.encounter = encounter;
+        this.document = foundry.utils.deepClone(templateData);
+        this.x = this.document.x;
+        this.y = this.document.y;
+        this.distance = this.document.distance;
+    }
+
+    async drawPreview() {
+        await MonksEnhancedJournal.journal?.minimize();
+
+        return new Promise((resolve, reject) => {
+            this.#events = {
+                cancel: this.#onCancelPlacement.bind(this),
+                position: this.#onSetPlacement.bind(this),
+                move: this.#onMovePlacement.bind(this),
+                confirm: this.#onConfirmPlacement.bind(this),
+                resolve,
+                reject
+            };
+
+            canvas.stage.on("pointerdown", this.#events.position);
+            canvas.stage.on("pointermove", this.#events.move);
+            canvas.stage.on("pointerup", this.#events.confirm);
+            canvas.app.view.oncontextmenu = this.#events.cancel;
+        });
+    }
+
+    #getLocalPosition(event) {
+        return event.data.getLocalPosition(canvas.stage);
+    }
+
+    #onMovePlacement(event) {
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        const now = Date.now();
+        if (now - this.#moveTime <= 20) return;
+        const center = this.#getLocalPosition(event);
+        const snapped = EncounterTemplate.getSnappedPosition(center.x, center.y, 2);
+        this.x = this.document.x = snapped.x;
+        this.y = this.document.y = snapped.y;
+        this.#moveTime = now;
+    }
+
+    #onSetPlacement(event) {
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        this.#origin = this.#getLocalPosition(event);
+        const snapped = EncounterTemplate.getSnappedPosition(this.#origin.x, this.#origin.y, 2);
+        this.x = this.document.x = snapped.x;
+        this.y = this.document.y = snapped.y;
+        canvas.stage.off("pointermove", this.#events.move);
+    }
+
+    async #finishPlacement() {
+        canvas.stage.off("pointerdown", this.#events.position);
+        canvas.stage.off("pointermove", this.#events.move);
+        canvas.stage.off("pointerup", this.#events.confirm);
+        canvas.app.view.oncontextmenu = null;
+        await MonksEnhancedJournal.journal?.maximize();
+    }
+
+    async #onConfirmPlacement(event) {
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (this.#origin) {
+            const center = this.#getLocalPosition(event);
+            const snapped = EncounterTemplate.getSnappedPosition(center.x, center.y, 2);
+            const ray = new foundry.canvas.geometry.Ray(this.#origin, snapped);
+            const ratio = (canvas.dimensions.size / canvas.dimensions.distance);
+            this.document.distance = Math.max(ray.distance / ratio, this.document.distance);
+        }
+
+        await this.#finishPlacement();
+        this.#events.resolve({ x: this.x, y: this.y, distance: this.document.distance, t: "circle" });
+    }
+
+    async #onCancelPlacement(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        await this.#finishPlacement();
+        this.#events.reject();
+    }
 }
