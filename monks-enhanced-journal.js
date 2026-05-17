@@ -3457,6 +3457,7 @@ export class MonksEnhancedJournal {
 			distance: templateData.distance,
 			direction: templateData.direction,
 			shape,
+			_mejGridlessPositionsArePixels: true,
 			ray: foundry.canvas.geometry.Ray.fromAngle(x, y, direction, distance),
 			_getGridHighlightPositions() {
 				return MonksEnhancedJournal._getGridHighlightPositions(this);
@@ -3495,7 +3496,7 @@ export class MonksEnhancedJournal {
 		// get the template grid positions
 		if (!template._getGridHighlightPositions) template = MonksEnhancedJournal.createTemplateShape(template);
 		let positions = template._getGridHighlightPositions();
-		if (canvas.grid.type == CONST.GRID_TYPES.GRIDLESS) {
+		if (canvas.grid.type == CONST.GRID_TYPES.GRIDLESS && !template._mejGridlessPositionsArePixels) {
 			positions = positions.map((p) => {
 				let dx = p.x - template.x;
 				let dy = p.y - template.y;
@@ -3583,7 +3584,7 @@ export class MonksEnhancedJournal {
 				for (let c = -nCols; c < nCols; c++) {
 					const [gx, gy] = grid.getPixelsFromGridPosition(row0 + r, col0 + c);
 					const [testX, testY] = [(gx + hx) - x, (gy + hy) - y];
-					const contains = ((r === 0) && (c === 0) && isCenter) || grid._testShape(testX, testY, template.shape);
+					const contains = ((r === 0) && (c === 0) && isCenter) || (grid._testShape ? grid._testShape(testX, testY, template.shape) : template.shape?.contains?.(testX, testY));
 					if (!contains) continue;
 					positions.push({ x: gx, y: gy });
 				}
