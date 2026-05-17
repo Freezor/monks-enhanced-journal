@@ -3427,6 +3427,45 @@ export class MonksEnhancedJournal {
 		}
 	}
 
+	static createTemplateShape(data) {
+		if (data?._getGridHighlightPositions) return data;
+
+		const templateData = foundry.utils.deepClone(data || {});
+		templateData.t ??= "circle";
+		templateData.distance ??= 5;
+		templateData.direction ??= 0;
+		templateData.angle ??= 90;
+		templateData.width ??= canvas.dimensions.distance;
+
+		const ratio = canvas.dimensions.size / canvas.dimensions.distance;
+		const distance = templateData.distance * ratio;
+		const width = templateData.width * ratio;
+		const direction = Math.toRadians(templateData.direction);
+		const x = templateData.x ?? 0;
+		const y = templateData.y ?? 0;
+
+		let shape;
+		if (templateData.t === "rect") shape = new PIXI.Rectangle(0, 0, distance, distance);
+		else if (templateData.t === "ray") shape = new PIXI.Rectangle(0, -(width / 2), distance, width);
+		else shape = new PIXI.Circle(0, 0, distance);
+
+		return {
+			document: templateData,
+			t: templateData.t,
+			x,
+			y,
+			distance: templateData.distance,
+			direction: templateData.direction,
+			shape,
+			_mejGridlessPositionsArePixels: true,
+			ray: foundry.canvas.geometry.Ray.fromAngle(x, y, direction, distance),
+			_getGridHighlightPositions() {
+				return MonksEnhancedJournal._getGridHighlightPositions(this);
+			}
+		};
+	}
+
+
 	static findVacantSpot(template, size, newTokens, center) {
 		let tokenList = canvas.scene.tokens.contents.concat(...newTokens);
 
@@ -3455,8 +3494,9 @@ export class MonksEnhancedJournal {
 		}
 
 		// get the template grid positions
+		if (!template._getGridHighlightPositions) template = MonksEnhancedJournal.createTemplateShape(template);
 		let positions = template._getGridHighlightPositions();
-		if (canvas.grid.type == CONST.GRID_TYPES.GRIDLESS) {
+		if (canvas.grid.type == CONST.GRID_TYPES.GRIDLESS && !template._mejGridlessPositionsArePixels) {
 			positions = positions.map((p) => {
 				let dx = p.x - template.x;
 				let dy = p.y - template.y;
@@ -3464,7 +3504,9 @@ export class MonksEnhancedJournal {
 				p.y = template.y + (dy * canvas.scene.dimensions.size);
 				return p;
 			}).filter((p) => {
-				return canvas.grid._testShape(p.x - template.x, p.y - template.y, template.shape)
+				const testX = p.x - template.x;
+				const testY = p.y - template.y;
+				return canvas.grid._testShape ? canvas.grid._testShape(testX, testY, template.shape) : template.shape?.contains?.(testX, testY);
 			});
 		}
 		/*
@@ -3520,31 +3562,52 @@ export class MonksEnhancedJournal {
 	static _getGridHighlightPositions(template) {
 		const grid = canvas.grid;
 		const d = canvas.dimensions;
-		const { x, y, distance } = template;
+		const { x, y } = template;
+		const distance = (template.document?.distance ?? template.distance ?? 5);
+		const size = d.size;
+		const gridWidth = grid.w ?? grid.size ?? size;
+		const gridHeight = grid.h ?? grid.size ?? size;
 
-		// Get number of rows and columns
-		const [maxRow, maxCol] = grid.getGridPositionFromPixels(d.width, d.height);
-		let nRows = Math.ceil(((distance * 1.5) / d.distance) / (d.size / grid.h));
-		let nCols = Math.ceil(((distance * 1.5) / d.distance) / (d.size / grid.w));
-		[nRows, nCols] = [Math.min(nRows, maxRow), Math.min(nCols, maxCol)];
+		if (grid.getGridPositionFromPixels && grid.getPixelsFromGridPosition && grid.getTopLeft) {
+			const [maxRow, maxCol] = grid.getGridPositionFromPixels(d.width, d.height);
+			let nRows = Math.ceil(((distance * 1.5) / d.distance) / (d.size / gridHeight));
+			let nCols = Math.ceil(((distance * 1.5) / d.distance) / (d.size / gridWidth));
+			[nRows, nCols] = [Math.min(nRows, maxRow), Math.min(nCols, maxCol)];
 
-		// Get the offset of the template origin relative to the top-left grid space
-		const [tx, ty] = grid.getTopLeft(x, y);
-		const [row0, col0] = grid.getGridPositionFromPixels(tx, ty);
-		const [hx, hy] = [Math.ceil(grid.w / 2), Math.ceil(grid.h / 2)];
-		const isCenter = (x - tx === hx) && (y - ty === hy);
+			const [tx, ty] = grid.getTopLeft(x, y);
+			const [row0, col0] = grid.getGridPositionFromPixels(tx, ty);
+			const [hx, hy] = [Math.ceil(gridWidth / 2), Math.ceil(gridHeight / 2)];
+			const isCenter = (x - tx === hx) && (y - ty === hy);
 
-		// Identify grid coordinates covered by the template Graphics
+			const positions = [];
+			for (let r = -nRows; r < nRows; r++) {
+				for (let c = -nCols; c < nCols; c++) {
+					const [gx, gy] = grid.getPixelsFromGridPosition(row0 + r, col0 + c);
+					const [testX, testY] = [(gx + hx) - x, (gy + hy) - y];
+					const contains = ((r === 0) && (c === 0) && isCenter) || (grid._testShape ? grid._testShape(testX, testY, template.shape) : template.shape?.contains?.(testX, testY));
+					if (!contains) continue;
+					positions.push({ x: gx, y: gy });
+				}
+			}
+			return positions;
+		}
+
+		const radius = distance * (size / d.distance);
+		const minX = Math.floor((x - radius) / gridWidth) * gridWidth;
+		const maxX = Math.ceil((x + radius) / gridWidth) * gridWidth;
+		const minY = Math.floor((y - radius) / gridHeight) * gridHeight;
+		const maxY = Math.ceil((y + radius) / gridHeight) * gridHeight;
 		const positions = [];
-		for (let r = -nRows; r < nRows; r++) {
-			for (let c = -nCols; c < nCols; c++) {
-				const [gx, gy] = grid.getPixelsFromGridPosition(row0 + r, col0 + c);
-				const [testX, testY] = [(gx + hx) - x, (gy + hy) - y];
-				const contains = ((r === 0) && (c === 0) && isCenter) || grid._testShape(testX, testY, this.shape);
-				if (!contains) continue;
-				positions.push({ x: gx, y: gy });
+
+		for (let gx = minX; gx <= maxX; gx += gridWidth) {
+			for (let gy = minY; gy <= maxY; gy += gridHeight) {
+				const testX = (gx + (gridWidth / 2)) - x;
+				const testY = (gy + (gridHeight / 2)) - y;
+				const contains = grid._testShape ? grid._testShape(testX, testY, template.shape) : template.shape?.contains?.(testX, testY);
+				if (contains) positions.push({ x: gx, y: gy });
 			}
 		}
+
 		return positions;
 	}
 

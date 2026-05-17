@@ -488,35 +488,9 @@ export class EncounterSheet extends EnhancedJournalSheet {
                     if (templates instanceof Array) data = templates[parseInt(Math.random() * templates.length)];
                     let template = foundry.utils.duplicate(data);
 
-                    if (!(template instanceof foundry.canvas.placeables.MeasuredTemplate)) {
-                        const cls = CONFIG.MeasuredTemplate.documentClass;
-                        const doc = new cls(template, { parent: canvas.scene });
-                        template = new foundry.canvas.placeables.MeasuredTemplate(doc);
-
-                        let { x, y, direction, distance, angle, width } = template.document;
-                        let d = canvas.dimensions;
-                        //distance *= (d.size / d.distance);
-                        width *= (d.size / d.distance);
-                        direction = Math.toRadians(direction);
-
-                        template.position.set(x, y);
-
-                        // Create ray and bounding rectangle
-                        template.ray = foundry.canvas.geometry.Ray.fromAngle(x, y, direction, distance);
-
-                        switch (template.document.t) {
-                            case "circle":
-                                template.shape = template.constructor.getCircleShape(distance);
-                                break;
-                            case "cone":
-                                template.shape = template.constructor.getConeShape(direction, angle, distance);
-                                break;
-                            case "rect":
-                                template.shape = template.constructor.getRectShape(direction, distance);
-                                break;
-                            case "ray":
-                                template.shape = template.constructor.getRayShape(direction, distance, width);
-                        }
+                    const MeasuredTemplatePlaceable = foundry.canvas.placeables.MeasuredTemplate;
+                    if (!MeasuredTemplatePlaceable || !(template instanceof MeasuredTemplatePlaceable)) {
+                        template = MonksEnhancedJournal.createTemplateShape(template);
                     }
 
                     let newSpot = MonksEnhancedJournal.findVacantSpot(template, { width: actor.prototypeToken.width, height: actor.prototypeToken.height }, tokens, data.center || options.center);
